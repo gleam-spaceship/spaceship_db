@@ -26,6 +26,11 @@ pub fn driver(binding: String) -> AsyncDriver {
     begin: begin,
     commit: commit,
     rollback: rollback,
+    begin_transaction_exec: fn(state, sql, params) {
+      do_exec_tx(state, sql, params)
+    },
+    begin_transaction_commit: fn(state) { do_commit_tx(state) },
+    begin_transaction_rollback: fn(state) { do_rollback_tx(state) },
   )
 }
 
@@ -59,13 +64,11 @@ fn begin(connection: Connection) -> Promise(Result(Transaction, String)) {
 }
 
 fn commit(transaction: Transaction) -> Promise(Result(Nil, String)) {
-  let conn = unsafe_unwrap_transaction(transaction)
-  exec_sql(conn, "COMMIT")
+  do_exec_sql_tx(transaction, "COMMIT")
 }
 
 fn rollback(transaction: Transaction) -> Promise(Result(Nil, String)) {
-  let conn = unsafe_unwrap_transaction(transaction)
-  exec_sql(conn, "ROLLBACK")
+  do_exec_sql_tx(transaction, "ROLLBACK")
 }
 
 fn exec_sql(
@@ -108,5 +111,23 @@ fn do_exec_sql(
 @external(javascript, "../ffi/d1.mjs", "wrap_transaction")
 fn unsafe_wrap_transaction(connection: Connection) -> Transaction
 
-@external(javascript, "../ffi/d1.mjs", "unwrap_transaction")
-fn unsafe_unwrap_transaction(transaction: Transaction) -> Connection
+@external(javascript, "../ffi/d1.mjs", "exec_sql_tx")
+fn do_exec_sql_tx(
+  transaction: Transaction,
+  sql: String,
+) -> Promise(Result(Nil, String))
+
+// Async transaction FFI
+
+@external(javascript, "../ffi/d1.mjs", "exec_tx")
+fn do_exec_tx(
+  state: Dynamic,
+  sql: String,
+  params: List(Value),
+) -> Promise(Result(#(List(Dynamic), Dynamic), String))
+
+@external(javascript, "../ffi/d1.mjs", "commit_tx")
+fn do_commit_tx(state: Dynamic) -> Promise(Result(Nil, String))
+
+@external(javascript, "../ffi/d1.mjs", "rollback_tx")
+fn do_rollback_tx(state: Dynamic) -> Promise(Result(Nil, String))

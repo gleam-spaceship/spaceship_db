@@ -67,13 +67,24 @@ export function exec_sql(connection, sql) {
 }
 
 export function wrap_transaction(connection) {
-  // Transaction is just the connection with BEGIN already called
-  // We use an opaque wrapper to distinguish types at the Gleam level
-  return { __gleam_transaction: true, connection };
+  // Transaction is now Transaction(state: Dynamic)
+  // Store the SQLite connection as the transaction state
+  return { constructor: { name: "Transaction" }, state: connection };
 }
 
 export function unwrap_transaction(transaction) {
-  return transaction.connection;
+  return transaction.state;
+}
+
+// Transaction-aware SQL execution
+export function exec_sql_tx(transaction, sql) {
+  const connection = transaction.state;
+  try {
+    connection.prepare(sql).run();
+    return new Ok(undefined);
+  } catch (error) {
+    return new Error(error.message || String(error));
+  }
 }
 
 // Helper: Convert Gleam List to JS Array
@@ -113,4 +124,47 @@ function value_to_js(value) {
 
   // If it's already a native type, return as-is
   return value;
+}
+
+// Async transaction FFI
+
+export function exec_tx(state, sql, params) {
+  try {
+    const paramsArray = gleam_list_to_array(params);
+    try {
+      const rows = state.prepare(sql).all(...paramsArray);
+      const result = rows.map((row) => {
+        const values = Object.values(row).map((val) => {
+          if (val === null) return undefined;
+          if (val instanceof Uint8Array) return new BitArray(val);
+          return val;
+        });
+        return toList(values);
+      });
+      return Promise.resolve(new Ok([toList(result), state]));
+    } catch (e) {
+      state.prepare(sql).run(...paramsArray);
+      return Promise.resolve(new Ok([toList([]), state]));
+    }
+  } catch (error) {
+    return Promise.resolve(new Error(error.message || String(error)));
+  }
+}
+
+export function commit_tx(state) {
+  try {
+    state.prepare("COMMIT").run();
+    return Promise.resolve(new Ok(undefined));
+  } catch (error) {
+    return Promise.resolve(new Error(error.message || String(error)));
+  }
+}
+
+export function rollback_tx(state) {
+  try {
+    state.prepare("ROLLBACK").run();
+    return Promise.resolve(new Ok(undefined));
+  } catch (error) {
+    return Promise.resolve(new Error(error.message || String(error)));
+  }
 }

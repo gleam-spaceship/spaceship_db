@@ -19,9 +19,9 @@ pub type Statement {
 
 /// Transaction context.
 ///
-/// The payload is driver-specific.
+/// The payload is driver-specific. Turso stores its baton here.
 pub type Transaction {
-  Transaction(connection: Connection)
+  Transaction(state: Dynamic)
 }
 
 /// Driver trait — every backend implements this.
@@ -52,5 +52,9 @@ pub type AsyncDriver {
     begin: fn(Connection) -> Promise(Result(Transaction, String)),
     commit: fn(Transaction) -> Promise(Result(Nil, String)),
     rollback: fn(Transaction) -> Promise(Result(Nil, String)),
+    begin_transaction_exec: fn(Dynamic, String, List(Value)) ->
+      Promise(Result(#(List(Dynamic), Dynamic), String)),
+    begin_transaction_commit: fn(Dynamic) -> Promise(Result(Nil, String)),
+    begin_transaction_rollback: fn(Dynamic) -> Promise(Result(Nil, String)),
   )
 }

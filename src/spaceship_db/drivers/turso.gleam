@@ -1,5 +1,5 @@
 import gleam/bit_array
-import gleam/dynamic
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/fetch
 import gleam/http.{Post}
@@ -9,12 +9,18 @@ import gleam/int
 import gleam/javascript/promise.{type Promise}
 import gleam/json
 import gleam/list
+import gleam/option
 import gleam/string
 import spaceship_db/driver.{
   type AsyncDriver, type Connection, type Statement, type Transaction,
-  Connection, Statement,
+  Connection, Statement, Transaction,
 }
 import spaceship_db/value.{type Value, Blob, Bool, Float, Int, Null, Text}
+
+/// Turso transaction state.
+type TursoTxState {
+  TursoTxState(url: String, api_token: String, baton: option.Option(String))
+}
 
 /// Turso SQL-over-HTTP configuration.
 pub type Config {
@@ -43,6 +49,11 @@ pub fn driver(url: String, api_token: String) -> AsyncDriver {
     begin: begin,
     commit: commit,
     rollback: rollback,
+    begin_transaction_exec: fn(state, sql, params) {
+      do_exec_tx(state, sql, params)
+    },
+    begin_transaction_commit: fn(state) { do_commit_tx(state) },
+    begin_transaction_rollback: fn(state) { do_rollback_tx(state) },
   )
 }
 
@@ -72,22 +83,19 @@ fn exec(
   execute(connection, sql, params)
 }
 
-fn begin(_connection: Connection) -> Promise(Result(Transaction, String)) {
-  promise.resolve(Error(
-    "Turso HTTP transactions are not supported by this driver yet",
-  ))
+fn begin(connection: Connection) -> Promise(Result(Transaction, String)) {
+  let Connection(url:, api_token:) = connection
+  begin_transaction(url, api_token)
 }
 
 fn commit(_transaction: Transaction) -> Promise(Result(Nil, String)) {
-  promise.resolve(Error(
-    "Turso HTTP transactions are not supported by this driver yet",
-  ))
+  // Transaction committed through begin_transaction_commit
+  promise.resolve(Ok(Nil))
 }
 
 fn rollback(_transaction: Transaction) -> Promise(Result(Nil, String)) {
-  promise.resolve(Error(
-    "Turso HTTP transactions are not supported by this driver yet",
-  ))
+  // Transaction rolled back through begin_transaction_rollback
+  promise.resolve(Ok(Nil))
 }
 
 fn execute(
@@ -314,5 +322,257 @@ fn normalise_url(url: String) -> String {
   case string.ends_with(url, "/") {
     True -> string.drop_end(url, 1)
     False -> url
+  }
+}
+
+// ---- Transaction helpers ----
+
+fn begin_transaction(
+  url: String,
+  api_token: String,
+) -> Promise(Result(Transaction, String)) {
+  let body =
+    pipeline_body_with_baton("BEGIN", option.None)
+    |> json.to_string
+
+  case request.to(url <> "/v2/pipeline") {
+    Error(_) -> promise.resolve(Error("Invalid Turso database URL"))
+    Ok(req) -> {
+      req
+      |> request.set_method(Post)
+      |> request.set_header("authorization", "Bearer " <> api_token)
+      |> request.set_header("content-type", "application/json")
+      |> request.set_body(body)
+      |> fetch.send
+      |> promise.await(fn(result) {
+        case result {
+          Error(error) -> promise.resolve(Error(fetch_error(error)))
+          Ok(response) ->
+            fetch.read_json_body(response)
+            |> promise.await(fn(result) {
+              case result {
+                Error(error) -> promise.resolve(Error(fetch_error(error)))
+                Ok(response) -> {
+                  case response.status >= 200 && response.status < 300 {
+                    True -> {
+                      case decode_baton(response.body) {
+                        Ok(baton) -> {
+                          let state = TursoTxState(url:, api_token:, baton:)
+                          promise.resolve(
+                            Ok(Transaction(state_to_dynamic(state))),
+                          )
+                        }
+                        Error(_) ->
+                          promise.resolve(Error("Failed to decode Turso baton"))
+                      }
+                    }
+                    False ->
+                      promise.resolve(Error(
+                        "Turso returned HTTP status "
+                        <> int.to_string(response.status),
+                      ))
+                  }
+                }
+              }
+            })
+        }
+      })
+    }
+  }
+}
+
+fn decode_baton(
+  body: dynamic.Dynamic,
+) -> Result(option.Option(String), String) {
+  case decode.run(body, decode.at(["baton"], decode.optional(decode.string))) {
+    Ok(baton) -> Ok(baton)
+    Error(_) -> Error("Invalid Turso baton")
+  }
+}
+
+fn do_exec_tx(
+  state: Dynamic,
+  sql: String,
+  params: List(Value),
+) -> Promise(Result(#(List(Dynamic), Dynamic), String)) {
+  let tx_state = dynamic_to_state(state)
+  let body =
+    pipeline_body_with_statement(sql, params, tx_state.baton)
+    |> json.to_string
+
+  case request.to(tx_state.url <> "/v2/pipeline") {
+    Error(_) -> promise.resolve(Error("Invalid Turso database URL"))
+    Ok(req) -> {
+      req
+      |> request.set_method(Post)
+      |> request.set_header("authorization", "Bearer " <> tx_state.api_token)
+      |> request.set_header("content-type", "application/json")
+      |> request.set_body(body)
+      |> fetch.send
+      |> promise.await(fn(result) {
+        case result {
+          Error(error) -> promise.resolve(Error(fetch_error(error)))
+          Ok(response) -> {
+            fetch.read_json_body(response)
+            |> promise.await(fn(result) {
+              case result {
+                Error(error) -> promise.resolve(Error(fetch_error(error)))
+                Ok(response) -> {
+                  case response.status >= 200 && response.status < 300 {
+                    True -> {
+                      let new_baton = case decode_baton(response.body) {
+                        Ok(baton) -> baton
+                        Error(_) -> tx_state.baton
+                      }
+                      let new_state =
+                        TursoTxState(
+                          url: tx_state.url,
+                          api_token: tx_state.api_token,
+                          baton: new_baton,
+                        )
+                      case decode_pipeline(response.body) {
+                        Ok(rows) ->
+                          promise.resolve(
+                            Ok(#(rows, state_to_dynamic(new_state))),
+                          )
+                        Error(msg) -> promise.resolve(Error(msg))
+                      }
+                    }
+                    False ->
+                      promise.resolve(Error(
+                        "Turso returned HTTP status "
+                        <> int.to_string(response.status),
+                      ))
+                  }
+                }
+              }
+            })
+          }
+        }
+      })
+    }
+  }
+}
+
+fn do_commit_tx(state: Dynamic) -> Promise(Result(Nil, String)) {
+  let tx_state = dynamic_to_state(state)
+  execute_pipeline(tx_state.url, tx_state.api_token, "COMMIT", tx_state.baton)
+}
+
+fn do_rollback_tx(state: Dynamic) -> Promise(Result(Nil, String)) {
+  let tx_state = dynamic_to_state(state)
+  execute_pipeline(tx_state.url, tx_state.api_token, "ROLLBACK", tx_state.baton)
+}
+
+fn execute_pipeline(
+  url: String,
+  api_token: String,
+  sql: String,
+  baton: option.Option(String),
+) -> Promise(Result(Nil, String)) {
+  let body = pipeline_body_with_statement(sql, [], baton) |> json.to_string
+
+  case request.to(url <> "/v2/pipeline") {
+    Error(_) -> promise.resolve(Error("Invalid Turso database URL"))
+    Ok(req) -> {
+      req
+      |> request.set_method(Post)
+      |> request.set_header("authorization", "Bearer " <> api_token)
+      |> request.set_header("content-type", "application/json")
+      |> request.set_body(body)
+      |> fetch.send
+      |> promise.await(fn(result) {
+        case result {
+          Error(error) -> promise.resolve(Error(fetch_error(error)))
+          Ok(response) ->
+            fetch.read_json_body(response)
+            |> promise.await(fn(result) {
+              case result {
+                Error(error) -> promise.resolve(Error(fetch_error(error)))
+                Ok(response) -> {
+                  case response.status >= 200 && response.status < 300 {
+                    True -> promise.resolve(Ok(Nil))
+                    False ->
+                      promise.resolve(Error(
+                        "Turso returned HTTP status "
+                        <> int.to_string(response.status),
+                      ))
+                  }
+                }
+              }
+            })
+        }
+      })
+    }
+  }
+}
+
+// State conversion FFI
+
+@external(javascript, "../ffi/turso_tx.mjs", "state_to_dynamic")
+fn state_to_dynamic(state: TursoTxState) -> Dynamic
+
+@external(javascript, "../ffi/turso_tx.mjs", "dynamic_to_state")
+fn dynamic_to_state(d: Dynamic) -> TursoTxState
+
+fn pipeline_body_with_statement(
+  sql: String,
+  params: List(Value),
+  baton: option.Option(String),
+) -> json.Json {
+  let execute_request =
+    json.object([
+      #("type", json.string("execute")),
+      #(
+        "stmt",
+        json.object([
+          #("sql", json.string(sql)),
+          #("args", json.array(params, encode_value)),
+          #("want_rows", json.bool(True)),
+        ]),
+      ),
+    ])
+  let close_request = json.object([#("type", json.string("close"))])
+
+  json.object([
+    #("baton", encode_baton(baton)),
+    #(
+      "requests",
+      json.array([execute_request, close_request], fn(value) { value }),
+    ),
+  ])
+}
+
+fn pipeline_body_with_baton(
+  sql: String,
+  baton: option.Option(String),
+) -> json.Json {
+  let execute_request =
+    json.object([
+      #("type", json.string("execute")),
+      #(
+        "stmt",
+        json.object([
+          #("sql", json.string(sql)),
+          #("args", json.array([], fn(value) { value })),
+          #("want_rows", json.bool(True)),
+        ]),
+      ),
+    ])
+  let close_request = json.object([#("type", json.string("close"))])
+
+  json.object([
+    #("baton", encode_baton(baton)),
+    #(
+      "requests",
+      json.array([execute_request, close_request], fn(value) { value }),
+    ),
+  ])
+}
+
+fn encode_baton(baton: option.Option(String)) -> json.Json {
+  case baton {
+    option.Some(baton) -> json.string(baton)
+    option.None -> json.null()
   }
 }

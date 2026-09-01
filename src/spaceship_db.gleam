@@ -7,7 +7,7 @@ import gleam/result
 import gleam/string
 import spaceship_db/driver.{
   type AsyncDriver, type Connection, type Driver, type Statement,
-  type Transaction,
+  type Transaction, Transaction,
 }
 import spaceship_db/value.{type Value}
 
@@ -216,4 +216,73 @@ pub fn transaction(
     Error(_) -> db.driver.rollback(tx)
   }
   result
+}
+
+/// Async transaction context.
+///
+/// Carries driver-specific state. Turso uses this to track the baton across
+/// requests. SQLite and D1 return the same transaction for every operation.
+pub type AsyncTransaction {
+  AsyncTransaction(
+    state: Dynamic,
+    exec_fn: fn(Dynamic, String, List(Value)) ->
+      Promise(Result(#(List(Dynamic), Dynamic), String)),
+    commit_fn: fn(Dynamic) -> Promise(Result(Nil, String)),
+    rollback_fn: fn(Dynamic) -> Promise(Result(Nil, String)),
+  )
+}
+
+/// Start an async transaction, run the callback, and commit or roll back.
+pub fn async_transaction(
+  db: AsyncDb,
+  f: fn(AsyncTransaction) -> Promise(Result(a, String)),
+) -> Promise(Result(a, String)) {
+  promise.try_await(db.driver.begin(db.connection), fn(start_tx) {
+    let Transaction(state) = start_tx
+    let tx =
+      AsyncTransaction(
+        state:,
+        exec_fn: db.driver.begin_transaction_exec,
+        commit_fn: db.driver.begin_transaction_commit,
+        rollback_fn: db.driver.begin_transaction_rollback,
+      )
+    f(tx)
+    |> promise.await(fn(result) {
+      let _ = case result {
+        Ok(_) -> commit_async_tx(tx)
+        Error(_) -> rollback_async_tx(tx)
+      }
+      promise.resolve(result)
+    })
+  })
+}
+
+/// Execute a SQL statement within an async transaction.
+pub fn exec_async_tx(
+  tx: AsyncTransaction,
+  sql: String,
+  params: List(Value),
+  f: fn(#(List(Dynamic), AsyncTransaction)) -> Promise(Result(a, String)),
+) -> Promise(Result(a, String)) {
+  promise.try_await(tx.exec_fn(tx.state, sql, params), fn(result) {
+    let #(rows, new_state) = result
+    let new_tx =
+      AsyncTransaction(
+        state: new_state,
+        exec_fn: tx.exec_fn,
+        commit_fn: tx.commit_fn,
+        rollback_fn: tx.rollback_fn,
+      )
+    f(#(rows, new_tx))
+  })
+}
+
+/// Commit an async transaction explicitly.
+pub fn commit_async_tx(tx: AsyncTransaction) -> Promise(Result(Nil, String)) {
+  tx.commit_fn(tx.state)
+}
+
+/// Roll back an async transaction explicitly.
+pub fn rollback_async_tx(tx: AsyncTransaction) -> Promise(Result(Nil, String)) {
+  tx.rollback_fn(tx.state)
 }

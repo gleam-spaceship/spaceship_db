@@ -92,9 +92,39 @@ export function exec_sql(connection, sql) {
 }
 
 export function wrap_transaction(connection) {
-  return new D1Transaction(connection);
+  // Transaction is now Transaction(state: Dynamic)
+  // Store the D1 connection as the transaction state
+  return { constructor: { name: "Transaction" }, state: connection };
 }
 
 export function unwrap_transaction(transaction) {
-  return transaction.connection;
+  // Transaction.state is always a D1Connection for D1
+  return transaction.state;
+}
+
+// Transaction-aware SQL execution
+export function exec_sql_tx(transaction, sql) {
+  const connection = transaction.state;
+  return connection.binding.prepare(sql).run()
+    .then(() => new Ok(undefined))
+    .catch((error) => new Error(errorMessage(error)));
+}
+
+export function exec_tx(state, sql, params) {
+  return Promise.resolve()
+    .then(() => state.binding.prepare(sql).bind(...convertParams(params)).all())
+    .then((result) => new Ok([toList(result.results.map(convertRow)), state]))
+    .catch((error) => new Error(errorMessage(error)));
+}
+
+export function commit_tx(state) {
+  return state.binding.prepare("COMMIT").run()
+    .then(() => new Ok(undefined))
+    .catch((error) => new Error(errorMessage(error)));
+}
+
+export function rollback_tx(state) {
+  return state.binding.prepare("ROLLBACK").run()
+    .then(() => new Ok(undefined))
+    .catch((error) => new Error(errorMessage(error)));
 }

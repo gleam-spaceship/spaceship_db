@@ -1,4 +1,5 @@
 import gleam/dynamic.{type Dynamic}
+import gleam/javascript/promise.{type Promise}
 import gleam/result
 import spaceship_db/driver.{
   type Connection, type Driver, type Statement, type Transaction,
@@ -29,6 +30,25 @@ pub fn driver(path: String) -> Driver {
   )
 }
 
+/// Create an async SQLite driver.
+pub fn async_driver(path: String) -> driver.AsyncDriver {
+  driver.AsyncDriver(
+    name: "sqlite",
+    connect: fn(_name) { promise.resolve(connect(path)) },
+    close: fn(conn) { promise.resolve(close(conn)) },
+    prepare: fn(conn, sql) { promise.resolve(prepare(conn, sql)) },
+    exec: fn(stmt, params) { promise.resolve(exec(stmt, params)) },
+    begin: fn(conn) { promise.resolve(begin(conn)) },
+    commit: fn(tx) { promise.resolve(commit(tx)) },
+    rollback: fn(tx) { promise.resolve(rollback(tx)) },
+    begin_transaction_exec: fn(state, sql, params) {
+      do_exec_tx(state, sql, params)
+    },
+    begin_transaction_commit: fn(state) { do_commit_tx(state) },
+    begin_transaction_rollback: fn(state) { do_rollback_tx(state) },
+  )
+}
+
 fn connect(path: String) -> Result(Connection, String) {
   // FFI to node:sqlite DatabaseSync
   do_connect(path)
@@ -55,13 +75,11 @@ fn begin(connection: Connection) -> Result(Transaction, String) {
 }
 
 fn commit(transaction: Transaction) -> Result(Nil, String) {
-  let conn = unsafe_unwrap_transaction(transaction)
-  exec_sql(conn, "COMMIT")
+  do_exec_sql_tx(transaction, "COMMIT")
 }
 
 fn rollback(transaction: Transaction) -> Result(Nil, String) {
-  let conn = unsafe_unwrap_transaction(transaction)
-  exec_sql(conn, "ROLLBACK")
+  do_exec_sql_tx(transaction, "ROLLBACK")
 }
 
 fn exec_sql(connection: Connection, sql: String) -> Result(Nil, String) {
@@ -94,5 +112,20 @@ fn do_exec_sql(connection: Connection, sql: String) -> Result(Nil, String)
 @external(javascript, "../ffi/sqlite.mjs", "wrap_transaction")
 fn unsafe_wrap_transaction(connection: Connection) -> Transaction
 
-@external(javascript, "../ffi/sqlite.mjs", "unwrap_transaction")
-fn unsafe_unwrap_transaction(transaction: Transaction) -> Connection
+@external(javascript, "../ffi/sqlite.mjs", "exec_sql_tx")
+fn do_exec_sql_tx(transaction: Transaction, sql: String) -> Result(Nil, String)
+
+// Async transaction FFI
+
+@external(javascript, "../ffi/sqlite.mjs", "exec_tx")
+fn do_exec_tx(
+  state: Dynamic,
+  sql: String,
+  params: List(Value),
+) -> Promise(Result(#(List(Dynamic), Dynamic), String))
+
+@external(javascript, "../ffi/sqlite.mjs", "commit_tx")
+fn do_commit_tx(state: Dynamic) -> Promise(Result(Nil, String))
+
+@external(javascript, "../ffi/sqlite.mjs", "rollback_tx")
+fn do_rollback_tx(state: Dynamic) -> Promise(Result(Nil, String))
