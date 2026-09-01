@@ -2,14 +2,27 @@ import gleam/dynamic.{type Dynamic}
 import gleam/javascript/promise.{type Promise}
 import spaceship_db/value.{type Value}
 
-/// Opaque database connection handle.
-pub type Connection
+/// Database connection handle.
+///
+/// Built-in FFI drivers pass their JavaScript handle directly, while pure Gleam
+/// drivers can use the constructor to store their connection state.
+pub type Connection {
+  Connection(url: String, api_token: String)
+}
 
 /// Prepared statement — reusable across executions.
-pub type Statement
+///
+/// The payload is driver-specific.
+pub type Statement {
+  Statement(connection: Connection, sql: String)
+}
 
 /// Transaction context.
-pub type Transaction
+///
+/// The payload is driver-specific.
+pub type Transaction {
+  Transaction(connection: Connection)
+}
 
 /// Driver trait — every backend implements this.
 pub type Driver {

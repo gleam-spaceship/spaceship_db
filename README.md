@@ -144,7 +144,7 @@ spaceship_db.transaction(db, fn(tx) {
 All operations return `Result` types. Errors propagate via `use` syntax:
 
 ```gleam
-use db <- spaceship_db.new(sqlite.driver("db.sqlite"))
+use db <- spaceship_db.with_db(sqlite.driver("db.sqlite"))
 // If connection fails, execution stops with Error(String)
 
 use prepared <- spaceship_db.prepare(db, "INVALID SQL")
@@ -159,7 +159,7 @@ use prepared <- spaceship_db.prepare(db, "INVALID SQL")
 | D1 | Built-in | `d1.driver(binding)` |
 | PostgreSQL | Coming soon | `pg(uri:)` |
 | MySQL | Coming soon | `mysql(uri:)` |
-| Turso | Coming soon | `turso(uri:, api_token:)` |
+| Turso | Built-in HTTP | `turso.driver(url, api_token)` |
 
 ### SQLite (Local Development)
 
@@ -196,10 +196,43 @@ database_name = "my-database"
 database_id = "xxx-xxx-xxx"
 ```
 
+### Turso (SQL over HTTP)
+
+The Turso driver uses Turso's `/v2/pipeline` HTTP API. It works in JavaScript
+runtimes with Fetch support and does not require the libSQL JavaScript client.
+
+```gleam
+import gleam/dynamic.{type Dynamic}
+import gleam/javascript/promise.{type Promise}
+import spaceship_db
+import spaceship_db/drivers/turso
+
+pub fn list_users() -> Promise(Result(List(Dynamic), String)) {
+  spaceship_db.with_async_db(
+    turso.driver("https://example.turso.io", "your-database-token"),
+    fn(db) {
+      spaceship_db.prepare_async(db, "SELECT * FROM users", fn(statement) {
+        spaceship_db.exec_async(statement, [], fn(rows) {
+          promise.resolve(Ok(rows))
+        })
+      })
+    },
+  )
+}
+```
+
+Turso URLs using `turso://` or `libsql://` are accepted and converted to HTTPS.
+The API token should come from a secret or environment variable.
+
+The current async database API does not yet expose Turso's baton-based
+interactive transactions. The Turso driver's transaction methods return an
+explicit error until that API is available.
+
 ## Requirements
 
 - Gleam v1.0.0+
-- JavaScript runtime with `node:sqlite` support (Node.js 22+)
+- JavaScript runtime with Fetch support for the Turso driver
+- Node.js 22+ for the SQLite driver
 
 ## License
 
