@@ -3,6 +3,7 @@ import gleam/dynamic/decode.{type Decoder}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import spaceship_db/driver.{
   type Connection, type Driver, type Statement, type Transaction,
 }
@@ -131,12 +132,15 @@ fn decode_errors_to_string(errors: List(decode.DecodeError)) -> String {
             }
           })
       }
-      "Decode error: expected "
-      <> expected
-      <> ", got "
-      <> actual
-      <> " at "
-      <> path_str
+      [
+        "Decode error: expected ",
+        expected,
+        ", got ",
+        actual,
+        " at ",
+        path_str,
+      ]
+      |> string.join("")
     }
   }
 }

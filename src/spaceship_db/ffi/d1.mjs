@@ -60,12 +60,17 @@ function convertParams(params) {
 
 export function connect(bindingName) {
   try {
-    // In Cloudflare Workers, the D1 binding is available on the env object
-    // We need to get it from the global context or pass it through
-    const binding = globalThis.__env?.[bindingName];
-    if (!binding) {
-      return { tag: 'Error', 0: `D1 binding '${bindingName}' not found` };
+    // In Cloudflare Workers, globalThis.__env is set by the shim
+    const env = globalThis.__env;
+    if (!env) {
+      return { tag: 'Error', 0: 'No Cloudflare env available (globalThis.__env not set)' };
     }
+    
+    const binding = env[bindingName];
+    if (!binding) {
+      return { tag: 'Error', 0: `D1 binding '${bindingName}' not found in env` };
+    }
+    
     const conn = new D1Connection(binding);
     return { tag: 'Ok', 0: conn };
   } catch (error) {
