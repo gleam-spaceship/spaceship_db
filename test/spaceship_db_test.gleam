@@ -12,7 +12,7 @@ pub fn main() -> Nil {
 }
 
 pub fn connect_and_query_test() -> Result(Nil, String) {
-  use db <- spaceship_db.new(sqlite.driver(":memory:"))
+  use db <- spaceship_db.with_db(sqlite.driver(":memory:"))
 
   // Create table
   use prepared <- spaceship_db.prepare(
@@ -37,7 +37,7 @@ pub fn connect_and_query_test() -> Result(Nil, String) {
 }
 
 pub fn get_one_test() -> Result(Nil, String) {
-  use db <- spaceship_db.new(sqlite.driver(":memory:"))
+  use db <- spaceship_db.with_db(sqlite.driver(":memory:"))
 
   use prepared <- spaceship_db.prepare(
     db,
@@ -69,7 +69,7 @@ fn user_decoder() -> decode.Decoder(User) {
 }
 
 pub fn decode_all_test() -> Result(Nil, String) {
-  use db <- spaceship_db.new(sqlite.driver(":memory:"))
+  use db <- spaceship_db.with_db(sqlite.driver(":memory:"))
 
   use prepared <- spaceship_db.prepare(
     db,
@@ -99,7 +99,7 @@ pub fn decode_all_test() -> Result(Nil, String) {
 }
 
 pub fn decode_one_test() -> Result(Nil, String) {
-  use db <- spaceship_db.new(sqlite.driver(":memory:"))
+  use db <- spaceship_db.with_db(sqlite.driver(":memory:"))
 
   use prepared <- spaceship_db.prepare(
     db,
@@ -123,7 +123,7 @@ pub fn decode_one_test() -> Result(Nil, String) {
 }
 
 pub fn decode_one_not_found_test() -> Result(Nil, String) {
-  use db <- spaceship_db.new(sqlite.driver(":memory:"))
+  use db <- spaceship_db.with_db(sqlite.driver(":memory:"))
 
   use prepared <- spaceship_db.prepare(
     db,

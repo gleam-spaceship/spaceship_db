@@ -16,8 +16,8 @@ import spaceship_db/value
 import spaceship_db/drivers/sqlite
 
 pub fn main() -> Nil {
-  // Connect to database
-  use db <- spaceship_db.new(sqlite.driver(":memory:"))
+  // Connect to database (auto-closes when done)
+  use db <- spaceship_db.with_db(sqlite.driver(":memory:"))
 
   // Create table
   use prepared <- spaceship_db.prepare(db, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
@@ -60,7 +60,7 @@ fn user_decoder() -> decode.Decoder(User) {
 }
 
 pub fn main() -> Nil {
-  use db <- spaceship_db.new(sqlite.driver(":memory:"))
+  use db <- spaceship_db.with_db(sqlite.driver(":memory:"))
 
   use prepared <- spaceship_db.prepare(db, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
   use _ <- spaceship_db.exec(prepared, [])
@@ -84,11 +84,10 @@ pub fn main() -> Nil {
 ### Connection
 
 ```gleam
-// Create connection
-use db <- spaceship_db.new(sqlite.driver("path/to/db.sqlite"))
+// Create connection (auto-closes when callback returns)
+use db <- spaceship_db.with_db(sqlite.driver("path/to/db.sqlite"))
 
-// Close connection
-spaceship_db.close(db)
+// The connection is automatically closed at the end
 ```
 
 ### Prepared Statements
@@ -167,7 +166,7 @@ use prepared <- spaceship_db.prepare(db, "INVALID SQL")
 ```gleam
 import spaceship_db/drivers/sqlite
 
-use db <- spaceship_db.new(sqlite.driver("./app.db"))
+use db <- spaceship_db.with_db(sqlite.driver("./app.db"))
 ```
 
 ### D1 (Cloudflare Workers)
@@ -178,8 +177,7 @@ import spaceship_db/drivers/d1
 // In your Cloudflare entry point:
 pub fn main(req, env, ctx) {
   // Initialize D1 driver with binding name "DB"
-  let driver = d1.driver("DB")
-  use db <- spaceship_db.new(driver)
+  use db <- spaceship_db.with_db(d1.driver("DB"))
   
   // Use database
   use prepared <- spaceship_db.prepare(db, "SELECT * FROM notes")

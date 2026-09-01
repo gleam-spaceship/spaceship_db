@@ -19,17 +19,25 @@ pub type Prepared {
   Prepared(db: Db, statement: Statement)
 }
 
-/// Create a new database connection.
+/// Use a database connection with automatic cleanup.
+/// The connection is closed when the callback returns.
 /// Use with:
 /// ```gleam
-/// use db <- spaceship_db.new(sqlite(path: "./app.db"))
+/// fn list_users() {
+///   use db <- with_db(sqlite(path: "./app.db"))
+///   use prepared <- prepare(db, "SELECT * FROM users")
+///   exec(prepared, [])
+/// }
 /// ```
-pub fn new(
+pub fn with_db(
   driver: Driver,
   f: fn(Db) -> Result(a, String),
 ) -> Result(a, String) {
   use conn <- result.try(driver.connect(driver.name))
-  f(Db(driver:, connection: conn))
+  let db = Db(driver:, connection: conn)
+  let result = f(db)
+  let _ = close(db)
+  result
 }
 
 /// Close the database connection.
