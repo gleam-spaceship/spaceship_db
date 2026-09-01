@@ -1,15 +1,14 @@
-// Cloudflare D1 driver FFI
-// D1 is a serverless SQL database that works with Cloudflare Workers
+// Cloudflare D1 driver FFI.
+// D1 operations are asynchronous and return JavaScript Promises.
 
-// D1 connection wrapper
+import { Ok, Error, toList, BitArray } from "../../gleam.mjs";
+
 class D1Connection {
   constructor(binding) {
     this.binding = binding;
-    this.prepared = new Map();
   }
 }
 
-// D1 statement wrapper
 class D1Statement {
   constructor(sql, connection) {
     this.sql = sql;
@@ -17,108 +16,79 @@ class D1Statement {
   }
 }
 
-// D1 transaction wrapper
 class D1Transaction {
   constructor(connection) {
     this.connection = connection;
   }
 }
 
-// Convert D1 row to Gleam-compatible format
-function convertRow(row) {
-  if (!row) return null;
-  // D1 returns plain objects, we need to convert to a format Gleam can decode
-  return row;
+function errorMessage(error) {
+  return error?.message || String(error);
 }
 
-// Convert params to D1 format
-function convertParams(params) {
-  return params.map(param => {
-    if (param && param.tag === 'Int') {
-      return param[0];
-    } else if (param && param.tag === 'Float') {
-      return param[0];
-    } else if (param && param.tag === 'Text') {
-      return param[0];
-    } else if (param && param.tag === 'Bool') {
-      return param[0] ? 1 : 0;
-    } else if (param && param.tag === 'Null') {
-      return null;
-    } else if (param && param.tag === 'BitArray') {
-      return param[0];
-    } else {
-      // Try to extract value from object
-      if (typeof param === 'object' && param !== null) {
-        // Look for common patterns in Gleam dynamic values
-        if ('0' in param) return param['0'];
-        if ('value' in param) return param.value;
-      }
-      return param;
-    }
+function convertRow(row) {
+  const values = Object.values(row).map((value) => {
+    if (value === null) return undefined;
+    if (value instanceof Uint8Array) return new BitArray(value);
+    return value;
   });
+  return toList(values);
+}
+
+function convertParams(params) {
+  const values = [];
+  let current = params;
+  while (current && current.head !== undefined) {
+    const param = current.head;
+    if (param === null || param === undefined) values.push(null);
+    else if (Object.prototype.hasOwnProperty.call(param, 0)) values.push(param[0]);
+    else if (param.constructor?.name === "Null") values.push(null);
+    else values.push(param);
+    current = current.tail;
+  }
+  return values;
 }
 
 export function connect(bindingName) {
-  try {
-    // In Cloudflare Workers, globalThis.__env is set by the shim
+  return Promise.resolve().then(() => {
     const env = globalThis.__env;
-    if (!env) {
-      return { tag: 'Error', 0: 'No Cloudflare env available (globalThis.__env not set)' };
-    }
-    
+    if (!env) throw new Error("No Cloudflare env available");
+
     const binding = env[bindingName];
     if (!binding) {
-      return { tag: 'Error', 0: `D1 binding '${bindingName}' not found in env` };
+      throw new Error(`D1 binding '${bindingName}' not found in env`);
     }
-    
-    const conn = new D1Connection(binding);
-    return { tag: 'Ok', 0: conn };
-  } catch (error) {
-    return { tag: 'Error', 0: error.toString() };
-  }
+
+    return new Ok(new D1Connection(binding));
+  }).catch((error) => new Error(errorMessage(error)));
 }
 
-export function close(connection) {
-  // D1 connections don't need explicit closing
-  return { tag: 'Ok', 0: undefined };
+export function close(_connection) {
+  return Promise.resolve(new Ok(undefined));
 }
 
 export function prepare(connection, sql) {
-  try {
-    const stmt = new D1Statement(sql, connection);
-    return { tag: 'Ok', 0: stmt };
-  } catch (error) {
-    return { tag: 'Error', 0: error.toString() };
-  }
+  return Promise.resolve().then(() => {
+    return new Ok(new D1Statement(sql, connection));
+  }).catch((error) => new Error(errorMessage(error)));
 }
 
 export function exec(statement, params) {
-  try {
-    const d1Params = convertParams(params);
-    
-    // Use D1's batch API for better performance
-    const result = statement.connection.binding
+  return Promise.resolve()
+    .then(() => statement.connection.binding
       .prepare(statement.sql)
-      .bind(...d1Params)
-      .all();
-    
-    return { tag: 'Ok', 0: result.results.map(convertRow) };
-  } catch (error) {
-    return { tag: 'Error', 0: error.toString() };
-  }
+      .bind(...convertParams(params))
+      .all()
+    )
+    .then((result) => new Ok(toList(result.results.map(convertRow))))
+    .catch((error) => new Error(errorMessage(error)));
 }
 
 export function exec_sql(connection, sql) {
-  try {
-    // Execute raw SQL without parameters
-    const result = connection.binding
-      .prepare(sql)
-      .run();
-    
-    return { tag: 'Ok', 0: undefined };
-  } catch (error) {
-    return { tag: 'Error', 0: error.toString() };
-  }
+  return Promise.resolve()
+    .then(() => connection.binding.prepare(sql).run())
+    .then(() => new Ok(undefined))
+    .catch((error) => new Error(errorMessage(error)));
 }
 
 export function wrap_transaction(connection) {

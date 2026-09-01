@@ -1,11 +1,13 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode.{type Decoder}
+import gleam/javascript/promise.{type Promise}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import spaceship_db/driver.{
-  type Connection, type Driver, type Statement, type Transaction,
+  type AsyncDriver, type Connection, type Driver, type Statement,
+  type Transaction,
 }
 import spaceship_db/value.{type Value}
 
@@ -17,6 +19,55 @@ pub type Db {
 /// Prepared statement bound to its database.
 pub type Prepared {
   Prepared(db: Db, statement: Statement)
+}
+
+/// Database handle for asynchronous drivers.
+pub type AsyncDb {
+  AsyncDb(driver: AsyncDriver, connection: Connection)
+}
+
+/// Prepared statement for an asynchronous driver.
+pub type AsyncPrepared {
+  AsyncPrepared(db: AsyncDb, statement: Statement)
+}
+
+/// Use an asynchronous database connection and close it after the callback
+/// completes.
+pub fn with_async_db(
+  driver: AsyncDriver,
+  f: fn(AsyncDb) -> Promise(Result(a, String)),
+) -> Promise(Result(a, String)) {
+  promise.try_await(driver.connect(driver.name), fn(connection) {
+    let db = AsyncDb(driver:, connection:)
+    f(db)
+    |> promise.await(fn(result) {
+      driver.close(connection)
+      |> promise.map(fn(_) { result })
+    })
+  })
+}
+
+/// Prepare a statement for an asynchronous driver.
+pub fn prepare_async(
+  db: AsyncDb,
+  sql: String,
+  f: fn(AsyncPrepared) -> Promise(Result(a, String)),
+) -> Promise(Result(a, String)) {
+  promise.try_await(db.driver.prepare(db.connection, sql), fn(statement) {
+    f(AsyncPrepared(db:, statement:))
+  })
+}
+
+/// Execute a statement for an asynchronous driver.
+pub fn exec_async(
+  prepared: AsyncPrepared,
+  params: List(Value),
+  f: fn(List(Dynamic)) -> Promise(Result(a, String)),
+) -> Promise(Result(a, String)) {
+  promise.try_await(
+    prepared.db.driver.exec(prepared.statement, params),
+    fn(rows) { f(rows) },
+  )
 }
 
 /// Use a database connection with automatic cleanup.
