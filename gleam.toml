@@ -2,7 +2,10 @@ name = "spaceship_db"
 version = "0.1.0"
 target = "javascript"
 
-description = "Reusable database API for Gleam (JS target)"
+description = "Database drivers for Gleam — SQLite, D1, and Turso with async transaction support"
+licences = ["Apache-2.0"]
+repository = { type = "github", user = "gleam-spaceship", repo = "spaceship_db" }
+links = [{ title = "GitHub", href = "https://github.com/gleam-spaceship/spaceship_db" }]
 
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
