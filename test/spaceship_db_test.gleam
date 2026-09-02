@@ -160,15 +160,15 @@ pub fn async_transaction_commit_test() -> Promise(Result(Nil, String)) {
       [value.text("Alice")],
     )
     let #(rows, tx) = tx_result
-    assert list.length(rows) == 0
+    assert rows == []
 
     use tx_result <- spaceship_db.exec_async_tx(
       tx,
       "INSERT INTO users (name) VALUES (?)",
       [value.text("Bob")],
     )
-    let #(rows, tx) = tx_result
-    assert list.length(rows) == 0
+    let #(rows, _tx) = tx_result
+    assert rows == []
 
     use prepared <- spaceship_db.prepare_async(db, "SELECT * FROM users")
     use _ <- spaceship_db.exec_async(prepared, [])
