@@ -1,5 +1,5 @@
 name = "spaceship_db"
-version = "0.1.0"
+version = "0.2.0"
 target = "javascript"
 
 description = "Database drivers for Gleam — SQLite, D1, and Turso with async transaction support"
