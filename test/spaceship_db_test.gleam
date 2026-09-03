@@ -6,6 +6,7 @@ import gleam/result
 import gleeunit
 import spaceship_db
 import spaceship_db/drivers/sqlite
+import spaceship_db/migration
 import spaceship_db/value
 
 pub fn main() -> Nil {
@@ -201,4 +202,78 @@ pub fn async_transaction_rollback_test() -> Promise(Result(Nil, String)) {
     )
     promise.resolve(Error("Rolling back"))
   })
+}
+
+pub fn migration_test() -> Result(Nil, String) {
+  use db <- spaceship_db.with_db(sqlite.driver(":memory:"))
+
+  let migrations = [
+    migration.Migration(
+      name: "001_create_users",
+      up: ["CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"],
+      down: ["DROP TABLE users"],
+    ),
+    migration.Migration(
+      name: "002_add_email",
+      up: ["ALTER TABLE users ADD COLUMN email TEXT"],
+      down: ["ALTER TABLE users DROP COLUMN email"],
+    ),
+  ]
+
+  // Apply migrations
+  let result = migration.migrate(db, migrations)
+  assert result.is_ok(result)
+
+  // Apply again (should be idempotent)
+  let result = migration.migrate(db, migrations)
+  assert result.is_ok(result)
+
+  // Insert a user
+  use prepared <- spaceship_db.prepare(
+    db,
+    "INSERT INTO users (name, email) VALUES (?, ?)",
+  )
+  use _ <- spaceship_db.exec(prepared, [
+    value.text("Alice"),
+    value.text("alice@example.com"),
+  ])
+
+  // Query to verify
+  use prepared <- spaceship_db.prepare(db, "SELECT * FROM users")
+  use rows <- spaceship_db.exec(prepared, [])
+  assert list.length(rows) == 1
+
+  Ok(Nil)
+}
+
+pub fn migration_rollback_test() -> Result(Nil, String) {
+  use db <- spaceship_db.with_db(sqlite.driver(":memory:"))
+
+  let migrations = [
+    migration.Migration(
+      name: "001_create_users",
+      up: ["CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"],
+      down: ["DROP TABLE users"],
+    ),
+    migration.Migration(
+      name: "002_add_email",
+      up: ["ALTER TABLE users ADD COLUMN email TEXT"],
+      down: ["ALTER TABLE users DROP COLUMN email"],
+    ),
+  ]
+
+  // Apply migrations
+  let result = migration.migrate(db, migrations)
+  assert result.is_ok(result)
+
+  // Rollback last migration
+  let result = migration.rollback(db, migrations, 1)
+  assert result.is_ok(result)
+
+  // Verify table still exists but without email column
+  use prepared <- spaceship_db.prepare(db, "SELECT * FROM users")
+  use rows <- spaceship_db.exec(prepared, [])
+  assert rows == []
+
+  Ok(Nil)
 }
