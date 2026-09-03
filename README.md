@@ -79,15 +79,58 @@ pub fn main() -> Nil {
 }
 ```
 
+## Migrations
+
+Manage database schema changes with versioned migrations:
+
+```gleam
+import spaceship_db
+import spaceship_db/migration
+import spaceship_db/drivers/sqlite
+
+pub fn main() -> Nil {
+  let migrations = [
+    migration.Migration(
+      name: "001_create_users",
+      up: ["CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"],
+      down: ["DROP TABLE users"],
+    ),
+    migration.Migration(
+      name: "002_add_email",
+      up: ["ALTER TABLE users ADD COLUMN email TEXT"],
+      down: ["ALTER TABLE users DROP COLUMN email"],
+    ),
+  ]
+
+  use db <- spaceship_db.with_db(sqlite.driver("app.db"))
+
+  // Apply all pending migrations
+  let result = migration.migrate(db, migrations)
+
+  // Rollback last 1 migration
+  let result = migration.rollback(db, migrations, 1)
+}
+```
+
+Migrations are idempotent — running `migrate()` multiple times only applies pending migrations. Each migration runs in a transaction for safety.
+
+### Async Migrations
+
+```gleam
+use db <- spaceship_db.with_async_db(sqlite.async_driver("app.db"))
+use result <- promise.await(migration.migrate_async(db, migrations))
+```
+
 ## API Reference
 
 ### Connection
 
 ```gleam
-// Create connection (auto-closes when callback returns)
+// Sync connection (auto-closes when callback returns)
 use db <- spaceship_db.with_db(sqlite.driver("path/to/db.sqlite"))
 
-// The connection is automatically closed at the end
+// Async connection
+use db <- spaceship_db.with_async_db(sqlite.async_driver("path/to/db.sqlite"))
 ```
 
 ### Prepared Statements
@@ -139,6 +182,43 @@ spaceship_db.transaction(db, fn(tx) {
 })
 ```
 
+### Async Transactions
+
+```gleam
+spaceship_db.async_transaction(db, fn(tx) {
+  use tx_result <- spaceship_db.exec_async_tx(
+    tx,
+    "UPDATE accounts SET balance = balance - ?",
+    [value.float(100.0)],
+  )
+  let #(rows, tx) = tx_result
+
+  use tx_result <- spaceship_db.exec_async_tx(
+    tx,
+    "UPDATE accounts SET balance = balance + ?",
+    [value.float(100.0)],
+  )
+  let #(rows, _tx) = tx_result
+
+  promise.resolve(Ok(Nil))
+})
+```
+
+For Turso's baton-based transactions, the updated transaction state is carried through the callback chain:
+
+```gleam
+spaceship_db.async_transaction(db, fn(tx) {
+  use tx_result <- spaceship_db.exec_async_tx(tx, "INSERT INTO logs (msg) VALUES (?)", [value.text("start")])
+  let #(_rows, tx) = tx_result
+
+  // tx now contains the updated Turso baton for the next request
+  use tx_result <- spaceship_db.exec_async_tx(tx, "UPDATE counters SET count = count + 1", [])
+  let #(_rows, _tx) = tx_result
+
+  promise.resolve(Ok(Nil))
+})
+```
+
 ## Error Handling
 
 All operations return `Result` types. Errors propagate via `use` syntax:
@@ -153,20 +233,22 @@ use prepared <- spaceship_db.prepare(db, "INVALID SQL")
 
 ## Supported Drivers
 
-| Driver | Package | Config |
-|---|---|---|
-| SQLite | Built-in | `sqlite.driver(path)` |
-| D1 | Built-in | `d1.driver(binding)` |
-| PostgreSQL | Coming soon | `pg(uri:)` |
-| MySQL | Coming soon | `mysql(uri:)` |
-| Turso | Built-in HTTP | `turso.driver(url, api_token)` |
+| Driver | Config | Sync | Async | Transactions |
+|---|---|---|---|---|
+| SQLite | `sqlite.driver(path)` | ✓ | ✓ | ✓ |
+| D1 | `d1.driver(binding)` | — | ✓ | ✓ (baton) |
+| Turso | `turso.driver(url, token)` | — | ✓ | ✓ (baton) |
 
 ### SQLite (Local Development)
 
 ```gleam
 import spaceship_db/drivers/sqlite
 
+// Sync
 use db <- spaceship_db.with_db(sqlite.driver("./app.db"))
+
+// Async
+use db <- spaceship_db.with_async_db(sqlite.async_driver("./app.db"))
 ```
 
 ### D1 (Cloudflare Workers)
@@ -174,20 +256,17 @@ use db <- spaceship_db.with_db(sqlite.driver("./app.db"))
 ```gleam
 import spaceship_db/drivers/d1
 
-// In your Cloudflare entry point:
 pub fn main(req, env, ctx) {
-  // Initialize D1 driver with binding name "DB"
-  use db <- spaceship_db.with_db(d1.driver("DB"))
-  
-  // Use database
-  use prepared <- spaceship_db.prepare(db, "SELECT * FROM notes")
-  use rows <- spaceship_db.exec(prepared, [])
-  
+  use db <- spaceship_db.with_async_db(d1.driver("DB"))
+
+  use prepared <- spaceship_db.prepare_async(db, "SELECT * FROM notes")
+  use rows <- spaceship_db.exec_async(prepared, [])
+
   // Handle request
 }
 ```
 
-The D1 driver works with Cloudflare's D1 database. The binding name should match what you defined in your `wrangler.toml`:
+The binding name should match your `wrangler.toml`:
 
 ```toml
 [[d1_databases]]
@@ -198,40 +277,28 @@ database_id = "xxx-xxx-xxx"
 
 ### Turso (SQL over HTTP)
 
-The Turso driver uses Turso's `/v2/pipeline` HTTP API. It works in JavaScript
-runtimes with Fetch support and does not require the libSQL JavaScript client.
+Uses Turso's `/v2/pipeline` HTTP API. No libSQL client required — works in any JavaScript runtime with Fetch support.
 
 ```gleam
-import gleam/dynamic.{type Dynamic}
-import gleam/javascript/promise.{type Promise}
 import spaceship_db
 import spaceship_db/drivers/turso
 
-pub fn list_users() -> Promise(Result(List(Dynamic), String)) {
-  spaceship_db.with_async_db(
-    turso.driver("https://example.turso.io", "your-database-token"),
-    fn(db) {
-      spaceship_db.prepare_async(db, "SELECT * FROM users", fn(statement) {
-        spaceship_db.exec_async(statement, [], fn(rows) {
-          promise.resolve(Ok(rows))
-        })
-      })
-    },
+pub fn main() -> Nil {
+  use db <- spaceship_db.with_async_db(
+    turso.driver("https://your-db.turso.io", "your-token"),
   )
+
+  use prepared <- spaceship_db.prepare_async(db, "SELECT * FROM users")
+  use rows <- spaceship_db.exec_async(prepared, [])
 }
 ```
 
-Turso URLs using `turso://` or `libsql://` are accepted and converted to HTTPS.
-The API token should come from a secret or environment variable.
-
-The current async database API does not yet expose Turso's baton-based
-interactive transactions. The Turso driver's transaction methods return an
-explicit error until that API is available.
+Turso URLs using `turso://` or `libsql://` are converted to HTTPS automatically.
 
 ## Requirements
 
 - Gleam v1.0.0+
-- JavaScript runtime with Fetch support for the Turso driver
+- JavaScript runtime with Fetch support for D1 and Turso drivers
 - Node.js 22+ for the SQLite driver
 
 ## License
